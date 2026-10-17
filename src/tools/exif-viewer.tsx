@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Btn, CopyButton, CsvButton, download, FileDrop, Note, num, Panel, Row, Split, Stat, Stats, Table, Txt } from '../kit'
 import { display, dms, findTiff, jpegWithExif, parseTiff, rat, stripJpeg, writeTiff, type Tag } from './lib/exif-viewer'
 
+/** Info note (block layout; the global `.info` grid class would otherwise split it into columns). */
+const Tip = ({ children }: { children: React.ReactNode }) => <div className="k-note info" style={{ display: 'block' }}>{children}</div>
+
 interface Loaded { name: string; size: number; type: string; url: string; bytes: Uint8Array; tags: Tag[]; w: number; h: number }
 
 /** Paints a small landscape and stamps realistic EXIF on it, so the first screen has data. */
@@ -252,7 +255,7 @@ export default function ExifViewer() {
             />
           )}
         </Panel>
-        <Note>Everything is parsed in your browser; the photo is never uploaded. Map tiles are loaded from OpenStreetMap only when the photo has GPS data.</Note>
+        <Tip>Everything is parsed in your browser; the photo is never uploaded. Map tiles are loaded from OpenStreetMap only when the photo has GPS data.</Tip>
       </div>
     </Split>
   )

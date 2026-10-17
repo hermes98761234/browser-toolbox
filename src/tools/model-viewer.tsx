@@ -6,6 +6,9 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 
+/** Info note (block layout; the global `.info` grid class would otherwise split it into columns). */
+const Tip = ({ children }: { children: React.ReactNode }) => <div className="k-note info" style={{ display: 'block' }}>{children}</div>
+
 interface MatInfo { name: string; type: string; color: string; meshes: number; textures: number }
 interface Info {
   name: string; format: string; size: number; meshes: number; tris: number; verts: number
@@ -213,7 +216,7 @@ export default function ModelViewer() {
       <div>
         <Panel title="Open a model">
           <FileDrop accept=".glb,.gltf,.obj,.stl,.fbx,.bin,.png,.jpg,.jpeg,.mtl" multiple onFiles={open} label="Drop .glb / .gltf / .obj / .stl / .fbx (plus .bin & textures)" />
-          {busy && <Note>Parsing…</Note>}
+          {busy && <Tip>Parsing…</Tip>}
           {err && <Note tone="err">{err}</Note>}
           <Row>
             <Btn onClick={() => show(sampleModel(), [], 'Sample rocket (built-in)', 'Procedural', 0)}>Load sample</Btn>
@@ -229,7 +232,7 @@ export default function ModelViewer() {
           <p className="k-label">Background</p>
           <Seg value={s.bg} onChange={(bg) => set({ bg })} options={[['dark', 'Night'], ['studio', 'Studio'], ['light', 'Light']]} />
         </Panel>
-        <Note>Files are parsed locally and never uploaded. For a .gltf with external buffers, drop the .gltf together with its .bin and texture files. Drag to orbit, scroll to zoom, right-drag to pan.</Note>
+        <Tip>Files are parsed locally and never uploaded. For a .gltf with external buffers, drop the .gltf together with its .bin and texture files. Drag to orbit, scroll to zoom, right-drag to pan.</Tip>
       </div>
       <div>
         <Panel title={info ? info.name : 'Viewer'}>
