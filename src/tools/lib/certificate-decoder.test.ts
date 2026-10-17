@@ -1,0 +1,36 @@
+import { describe, expect, it } from 'vitest'
+import { decodeCert, dnString, E, oid, parseDer, readInput, toPem, verify } from './certificate-decoder'
+
+describe('certificate decoder', () => {
+  it('encodes and decodes OIDs and lengths', () => {
+    const o = parseDer(E.oid('1.2.840.113549.1.1.11'))
+    expect(oid(o.bytes.subarray(o.hdr))).toBe('1.2.840.113549.1.1.11')
+    const big = parseDer(E.octet(new Uint8Array(300)))
+    expect(big.len).toBe(300)
+    expect(big.hdr).toBe(4)
+    expect(() => parseDer(Uint8Array.from([0x30, 0x80, 0, 0]))).toThrow(/Indefinite/)
+  })
+  it('generates, parses and verifies a sample chain', async () => {
+    const { makeSampleChain } = await import('./certificate-decoder')
+    const pem = await makeSampleChain()
+    const blocks = readInput(pem)
+    expect(blocks).toHaveLength(3)
+    const [leaf, inter, root] = blocks.map((b) => decodeCert(b.der))
+    expect(leaf.version).toBe(3)
+    expect(dnString(leaf.subject)).toBe('CN=www.example.com')
+    expect(leaf.san).toEqual(['DNS:www.example.com', 'DNS:example.com', 'DNS:api.example.com', 'IP:203.0.113.10'])
+    expect(leaf.sigAlg).toBe('ecdsa-with-SHA256')
+    expect(leaf.keyDetail).toBe('P-256')
+    expect(leaf.isCA).toBe(false)
+    expect(inter.isCA).toBe(true)
+    expect(root.selfSigned).toBe(true)
+    expect(leaf.aki).toBe(inter.ski)
+    expect(leaf.extensions.find((e) => e.name === 'Key Usage')!.values).toEqual(['Digital Signature'])
+    expect(inter.extensions.find((e) => e.name === 'Key Usage')!.values).toEqual(['Certificate Sign', 'CRL Sign'])
+    expect(await verify(leaf, inter)).toBe(true)
+    expect(await verify(inter, root)).toBe(true)
+    expect(await verify(leaf, root)).toBe(false)
+    expect(leaf.notAfter.getTime()).toBeGreaterThan(Date.now())
+    expect(readInput(toPem(leaf.der))[0].der).toEqual(leaf.der)
+  })
+})
