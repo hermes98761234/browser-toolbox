@@ -32,6 +32,11 @@ describe('catalog', () => {
     expect(filterTools(TOOLS, { ...DEFAULT_FILTERS, status: 'ready' }, ready, none).map((t) => t.slug)).toEqual(['expense-tracker'])
     expect(filterTools(TOOLS, DEFAULT_FILTERS, ready, none)[0].slug).toBe('expense-tracker')
   })
+  it('sorts newest built tools first', () => {
+    const added = { 'pdf-merger': '2026-10-02', 'expense-tracker': '2026-10-01' }
+    const l = filterTools(TOOLS, { ...DEFAULT_FILTERS, sort: 'newest' }, () => true, none, () => '', added)
+    expect(l.slice(0, 3).map((t) => t.slug)).toEqual(['pdf-merger', 'expense-tracker', TOOLS[0].slug])
+  })
   it('mixes categories in featured order', () => {
     const rr = roundRobin(TOOLS)
     expect(rr).toHaveLength(1000)

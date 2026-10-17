@@ -88,7 +88,7 @@ export function classify(r: RawTool): Tool {
 
 // ---------- filters ----------
 
-export type Sort = 'featured' | 'az' | 'za' | 'number' | 'category'
+export type Sort = 'featured' | 'newest' | 'az' | 'za' | 'number' | 'category'
 
 export interface Filters {
   q: string
@@ -132,7 +132,7 @@ export function queryToFilters(q: string): Filters {
     status: pick(p.get('status'), ['ready', 'soon'] as const, ''),
     fav: p.get('fav') === '1',
     recent: p.get('recent') === '1',
-    sort: pick(p.get('sort'), ['featured', 'az', 'za', 'number', 'category'] as const, 'featured'),
+    sort: pick(p.get('sort'), ['featured', 'newest', 'az', 'za', 'number', 'category'] as const, 'featured'),
     page: Math.max(1, Math.floor(Number(p.get('page')) || 1)),
   }
 }
@@ -166,7 +166,10 @@ export interface Mine {
   recent: string[]
 }
 
-export function filterTools(all: Tool[], f: Filters, ready: (slug: string) => boolean, mine: Mine, catName: (id: number) => string = () => ''): Tool[] {
+export function filterTools(
+  all: Tool[], f: Filters, ready: (slug: string) => boolean, mine: Mine,
+  catName: (id: number) => string = () => '', added: Record<string, string> = {},
+): Tool[] {
   let list = all
   if (f.fav) list = mine.fav.map((s) => all.find((t) => t.slug === s)).filter((t): t is Tool => !!t)
   else if (f.recent) list = mine.recent.map((s) => all.find((t) => t.slug === s)).filter((t): t is Tool => !!t)
@@ -187,6 +190,9 @@ export function filterTools(all: Tool[], f: Filters, ready: (slug: string) => bo
       return [...list].sort((a, b) => b.name.localeCompare(a.name))
     case 'number':
       return [...list].sort((a, b) => a.n - b.n)
+    case 'newest':
+      // Most recently built first, then the rest in catalog order.
+      return [...list].sort((a, b) => (added[b.slug] ?? '').localeCompare(added[a.slug] ?? '') || a.n - b.n)
     case 'category':
       return [...list].sort((a, b) => a.cat - b.cat || a.n - b.n)
     default: {

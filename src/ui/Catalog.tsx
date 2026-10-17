@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { T } from '../kitlib'
 import { DEFAULT_FILTERS, filterTools, filtersToQuery, KINDS, pageList, paginate, queryToFilters, TECH, type Filters, type Kind } from '../lib/catalog'
-import { CAT_BY_ID, CAT_STYLE, CATS, TOOLS } from '../lib/data'
+import { ADDED, CAT_BY_ID, CAT_STYLE, CATS, TOOLS } from '../lib/data'
 import { useStore } from '../lib/store'
 import { isReady, READY_COUNT } from '../tools'
 import { rememberCatalog } from './nav'
@@ -18,7 +18,7 @@ const catName = (id: number) => CAT_BY_ID.get(id)?.name ?? ''
 export function Catalog({ t, query }: { t: T; query: string }) {
   const f = useMemo(() => queryToFilters(query), [query])
   const mine = useStore()
-  const list = useMemo(() => filterTools(TOOLS, f, isReady, mine, catName), [f, mine])
+  const list = useMemo(() => filterTools(TOOLS, f, isReady, mine, catName, ADDED), [f, mine])
   const { items, page, pages } = paginate(list, f.page)
   const [open, setOpen] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -49,7 +49,7 @@ export function Catalog({ t, query }: { t: T; query: string }) {
     }
     return m
   }, [])
-  const fresh = useMemo(() => TOOLS.filter((x) => isReady(x.slug)).slice(-12).reverse(), [])
+  const fresh = useMemo(() => filterTools(TOOLS, { ...DEFAULT_FILTERS, status: 'ready', sort: 'newest' }, isReady, mine, catName, ADDED).slice(0, 12), [mine])
 
   const sel = <K extends keyof Filters>(k: K, label: string, opts: [string, string][]) => (
     <label className="fsel">
@@ -132,6 +132,7 @@ export function Catalog({ t, query }: { t: T; query: string }) {
           <span>{t('Sort')}</span>
           <select value={f.sort} onChange={(e) => set({ sort: e.target.value as Filters['sort'] })}>
             <option value="featured">{t('Featured')}</option>
+            <option value="newest">{t('Newest first')}</option>
             <option value="az">{t('Name A–Z')}</option>
             <option value="za">{t('Name Z–A')}</option>
             <option value="category">{t('By category')}</option>

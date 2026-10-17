@@ -36,6 +36,7 @@ export const UK: Record<string, string> = {
   Filters: 'Фільтри',
   Sort: 'Сортування',
   Featured: 'Рекомендовані',
+  'Newest first': 'Спершу нові',
   'Name A–Z': 'Назва А–Я',
   'Name Z–A': 'Назва Я–А',
   'By category': 'За категорією',

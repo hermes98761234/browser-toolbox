@@ -1,9 +1,12 @@
 import raw from '../data/catalog.json'
+import added from '../data/added.json'
 import { classify, type RawCat, type RawTool, type Tool } from './catalog'
 
 export const CATS: RawCat[] = raw.cats
 export const TOOLS: Tool[] = (raw.tools as RawTool[]).map(classify)
 export const BY_SLUG = new Map(TOOLS.map((t) => [t.slug, t]))
+/** When each tool went live (slug → ISO timestamp), maintained by the commit script. */
+export const ADDED: Record<string, string> = added
 export const CAT_BY_ID = new Map(CATS.map((c) => [c.id, c]))
 
 /** Icon and hue for every category (indexed by category id). */
