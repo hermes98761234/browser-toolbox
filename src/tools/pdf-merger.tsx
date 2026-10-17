@@ -181,7 +181,9 @@ export default function PdfMerger() {
       <div>
         <Panel title="Add PDFs">
           <FileDrop accept="application/pdf,.pdf" multiple onFiles={(f) => void add(f)} label="Drop PDFs here or click to choose (several at once is fine)" />
-          {docs.some((d) => d.sample) && <Note>Showing three generated sample PDFs. Add your own files and the samples are replaced.</Note>}
+          {docs.some((d) => d.sample) && <Note>
+              <div style={{ gridColumn: '1 / -1' }}>Showing three generated sample PDFs. Add your own files and the samples are replaced.</div>
+            </Note>}
           {msg && <Note tone={msg.tone}>{msg.text}</Note>}
           <p className="muted" style={{ fontSize: 13 }}>Files are read and merged entirely in your browser — nothing is uploaded.</p>
         </Panel>

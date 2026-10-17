@@ -217,7 +217,9 @@ export default function ImageCompressor() {
           <Seg value={o.format} onChange={(format) => set({ format })} options={[['image/webp', 'WebP'], ['image/jpeg', 'JPEG'], ['image/png', 'PNG']]} />
           {o.format === 'image/webp' && !webp && <Note tone="warn">This browser can't encode WebP; choose JPEG.</Note>}
           {o.format === 'image/png' ? (
-            <Note>PNG is lossless — savings come only from resizing. Use it for screenshots and graphics with sharp edges.</Note>
+            <Note>
+              <div style={{ gridColumn: '1 / -1' }}>PNG is lossless — savings come only from resizing. Use it for screenshots and graphics with sharp edges.</div>
+            </Note>
           ) : (
             <>
               <div style={{ margin: '10px 0' }}>
