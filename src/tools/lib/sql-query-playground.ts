@@ -9,7 +9,14 @@ export interface Table { name: string; cols: Column[]; rows: Value[][]; pk?: num
 export interface Db { tables: Record<string, Table> }
 export interface Result { columns: string[]; rows: Value[][]; message?: string; ms?: number }
 
-export class SqlError extends Error {}
+export class SqlError extends Error {
+  /** 0-based character offset of the problem in the SQL text, when known. */
+  pos?: number
+  constructor(msg: string, pos?: number) {
+    super(msg)
+    this.pos = pos
+  }
+}
 
 // ---------- tokenizer ----------
 
@@ -32,7 +39,7 @@ export function tokenize(sql: string): Tok[] {
       let s = ''
       i++
       for (;;) {
-        if (i >= sql.length) throw new SqlError(`Unterminated string starting at ${p + 1}`)
+        if (i >= sql.length) throw new SqlError(`Unterminated string starting at ${p + 1}`, p)
         if (sql[i] === "'") { if (sql[i + 1] === "'") { s += "'"; i += 2; continue } i++; break }
         s += sql[i++]
       }
@@ -40,7 +47,7 @@ export function tokenize(sql: string): Tok[] {
     } else if (c === '"' || c === '`' || c === '[') {
       const close = c === '[' ? ']' : c
       const e = sql.indexOf(close, i + 1)
-      if (e < 0) throw new SqlError(`Unterminated identifier at ${p + 1}`)
+      if (e < 0) throw new SqlError(`Unterminated identifier at ${p + 1}`, p)
       out.push({ t: 'qid', v: sql.slice(i + 1, e), p })
       i = e + 1
     } else if (/[A-Za-z_]/.test(c)) {
@@ -50,7 +57,7 @@ export function tokenize(sql: string): Tok[] {
     } else {
       const two = sql.slice(i, i + 2)
       const op = ['<=', '>=', '<>', '!=', '==', '||'].includes(two) ? two : c
-      if (!'<>=!+-*/%(),.;|'.includes(op[0])) throw new SqlError(`Unexpected character "${c}" at ${p + 1}`)
+      if (!'<>=!+-*/%(),.;|'.includes(op[0])) throw new SqlError(`Unexpected character "${c}" at ${p + 1}`, p)
       out.push({ t: 'op', v: op, p })
       i += op.length
     }
@@ -119,8 +126,8 @@ class Parser {
   get peek() { return this.toks[this.i] }
   err(msg: string): never {
     const p = this.peek.p
-    const line = this.src.slice(0, p).split('\n').length
-    throw new SqlError(`${msg} near "${this.peek.v || 'end of input'}" (line ${line})`)
+    const before = this.src.slice(0, p).split('\n')
+    throw new SqlError(`${msg} near "${this.peek.v || 'end of input'}" (line ${before.length}, col ${before[before.length - 1].length + 1})`, p)
   }
   isKw(...k: string[]) { return this.peek.t === 'id' && k.includes(this.peek.v.toLowerCase()) }
   kw(...k: string[]) { if (this.isKw(...k)) { this.i++; return true } return false }
@@ -427,6 +434,64 @@ export function likeToRegex(p: string): RegExp {
   return new RegExp('^' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.') + '$', 'is')
 }
 
+const DAY = 86400000
+
+/** Parses an SQLite-style time value plus modifiers ('+3 days', 'start of month', …) to epoch ms (UTC). */
+export function sqlDate(args: Value[]): number | null {
+  const [v, ...mods] = args
+  if (v === null || v === undefined) return null
+  let t: number
+  if (typeof v === 'number') t = v > 1e6 && v < 4e6 ? (v - 2440587.5) * DAY : v * 1000
+  else if (v.toLowerCase() === 'now') t = Date.now()
+  else {
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?)?/.exec(v.trim())
+    if (!m) return null
+    t = Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? 0), +(m[5] ?? 0)) + Number(m[6] ?? 0) * 1000
+  }
+  for (const raw of mods) {
+    if (raw === null) return null
+    const mod = String(raw).trim().toLowerCase()
+    const d = new Date(t)
+    const am = /^([+-]?\d+(?:\.\d+)?)\s+(day|hour|minute|second|month|year)s?$/.exec(mod)
+    if (am) {
+      const k = Number(am[1])
+      if (am[2] === 'month') d.setUTCMonth(d.getUTCMonth() + k)
+      else if (am[2] === 'year') d.setUTCFullYear(d.getUTCFullYear() + k)
+      else { t += k * { day: DAY, hour: 3600000, minute: 60000, second: 1000 }[am[2] as 'day']; continue }
+      t = d.getTime()
+    } else if (mod === 'start of month') t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)
+    else if (mod === 'start of year') t = Date.UTC(d.getUTCFullYear(), 0, 1)
+    else if (mod === 'start of day') t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+    else if (/^weekday [0-6]$/.test(mod)) t += ((Number(mod.slice(8)) - d.getUTCDay() + 7) % 7) * DAY
+    else return null
+  }
+  return Number.isFinite(t) ? t : null
+}
+
+/** SQLite strftime subset: %Y %m %d %H %M %S %j %w %W %s %f %%. */
+export function strftime(f: string, t: number): string {
+  const d = new Date(t)
+  const p = (x: number, n = 2) => String(x).padStart(n, '0')
+  const jan1 = Date.UTC(d.getUTCFullYear(), 0, 1)
+  const yday = Math.floor((t - jan1) / DAY)
+  return f.replace(/%([YmdHMSjwWsf%])/g, (_, c: string) => {
+    switch (c) {
+      case 'Y': return String(d.getUTCFullYear())
+      case 'm': return p(d.getUTCMonth() + 1)
+      case 'd': return p(d.getUTCDate())
+      case 'H': return p(d.getUTCHours())
+      case 'M': return p(d.getUTCMinutes())
+      case 'S': return p(d.getUTCSeconds())
+      case 'f': return `${p(d.getUTCSeconds())}.${p(d.getUTCMilliseconds(), 3)}`
+      case 'j': return p(yday + 1, 3)
+      case 'w': return String(d.getUTCDay())
+      case 'W': return p(Math.floor((yday + 7 - ((d.getUTCDay() + 6) % 7)) / 7))
+      case 's': return String(Math.floor(t / 1000))
+      default: return '%'
+    }
+  })
+}
+
 function affinity(type: string, v: Value): Value {
   if (v === null) return null
   const t = type.toUpperCase()
@@ -599,6 +664,22 @@ class Engine {
         return vs.reduce((p, v) => ((e.name === 'min' ? compare(v, p) < 0 : compare(v, p) > 0) ? v : p))
       }
       case 'iif': return truthy(a[0] ?? null) ? a[1] : a[2] ?? null
+      case 'ltrim': return s(0)?.replace(/^\s+/, '') ?? null
+      case 'rtrim': return s(0)?.replace(/\s+$/, '') ?? null
+      case 'sqrt': return n(0) === null || n(0)! < 0 ? null : Math.sqrt(n(0)!)
+      case 'power': case 'pow': return n(0) === null || n(1) === null ? null : n(0)! ** n(1)!
+      case 'sign': return n(0) === null ? null : Math.sign(n(0)!)
+      case 'date': case 'datetime': case 'julianday': case 'strftime': {
+        const fmtArg = e.name === 'strftime' ? s(0) : null
+        const rest = e.name === 'strftime' ? a.slice(1) : a
+        const d = sqlDate(rest)
+        if (d === null) return null
+        if (e.name === 'julianday') return d / 86400000 + 2440587.5
+        const iso = new Date(d).toISOString()
+        if (e.name === 'date') return iso.slice(0, 10)
+        if (e.name === 'datetime') return iso.slice(0, 19).replace('T', ' ')
+        return fmtArg === null ? null : strftime(fmtArg, d)
+      }
       default: throw new SqlError(`No such function: ${e.name.toUpperCase()}`)
     }
   }
@@ -682,8 +763,14 @@ class Engine {
       if (!s.groupBy.length && !groups.size) groups.set('[]', [])
       for (const grp of groups.values()) {
         const env = grp[0] ?? nullEnv
-        if (s.having && !truthy(this.eval(s.having, env, grp))) continue
-        outs.push({ vals: cols.map((c) => this.eval(c.expr, env, grp)), env, grp })
+        const vals = cols.map((c) => this.eval(c.expr, env, grp))
+        if (s.having) {
+          // HAVING may use output aliases (SQLite extension)
+          const out = new Map<string, Value>()
+          cols.forEach((c, i) => { if (!srcCols.has(c.name.toLowerCase())) out.set(c.name.toLowerCase(), vals[i]) })
+          if (!truthy(this.eval(s.having, { ...env, out }, grp))) continue
+        }
+        outs.push({ vals, env, grp })
       }
     } else outs = envs.map((env) => ({ vals: cols.map((c) => this.eval(c.expr, env)), env }))
 

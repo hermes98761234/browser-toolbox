@@ -285,7 +285,7 @@ Each entry: **name** `[2D|3D]` — what it is. *Build:* how to implement it.
 258. **Passive Voice Finder** `[2D]` — highlights passive voice and weak adverbs. *Build:* compromise.js verb tagging, detect be-verb plus past participle, mark spans.
 259. **Lorem Ipsum Generator** `[2D]` — creates placeholder paragraphs, lists, and headings. *Build:* seeded word bank, random sentence assembly, output plain text or HTML.
 260. **Text Summarizer** `[2D]` — extracts key sentences from long text. *Build:* TF-IDF sentence scoring in JS, select top sentences preserving original order.
-261. **Private Dictation Pad** `[2D]` — types text by speaking, fully offline. *Build:* transformers.js Whisper tiny on WebGPU, record via MediaRecorder, transcribe locally, export TXT.
+261. **Private Dictation Pad** `[2D]` — types text by speaking, on-device where the browser supports it. *Build:* Web Speech API with on-device recognition when available, voice punctuation commands, autosaving editor, export TXT.
 262. **Text To Speech Reader** `[2D]` — reads documents aloud with adjustable voice. *Build:* SpeechSynthesis API voices list, rate and pitch sliders, highlight current word.
 263. **Offline Spell Checker** `[2D]` — flags misspellings with suggestions without uploading. *Build:* Typo.js with Hunspell dictionaries from CDN, underline errors, click for suggestions.
 264. **Keyword Density Analyzer** `[2D]` — shows most frequent words and phrases. *Build:* tokenize, remove stopwords, count n-grams, render sortable frequency table.
