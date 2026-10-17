@@ -252,9 +252,9 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.01em; }
 .soon-box p { color: var(--muted); }
 .btn-primary { display: inline-block; padding: 10px 16px; border-radius: 10px; background: var(--accent); color: var(--on-accent); font-weight: 700; }
 .btn-primary:hover { text-decoration: none; filter: brightness(1.08); }
-.info { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
-.info section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; min-width: 0; }
-.info h2, .more { font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 8px; color: var(--muted); }
+.toolpage > .info { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+.toolpage > .info section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; min-width: 0; }
+.toolpage > .info h2, .more { font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 8px; color: var(--muted); }
 .more { margin: 28px 0 12px; }
 .facts { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
 .facts li { font-weight: 600; font-size: 14px; }
@@ -362,7 +362,7 @@ html, body { overflow-x: hidden; }
 .catalog, .toolpage, .hero, .toolbar, .grid { min-width: 0; max-width: 100%; }
 @media (max-width: 900px) {
   .hero { grid-template-columns: minmax(0, 1fr); padding: 22px; }
-  .info, .soon-box, .k-split, .k-split.wide-left { grid-template-columns: minmax(0, 1fr); }
+  .toolpage > .info, .soon-box, .k-split, .k-split.wide-left { grid-template-columns: minmax(0, 1fr); }
   .nav { order: 3; flex-basis: 100%; overflow-x: auto; flex-wrap: nowrap; }
   .nav a, .btn-random { white-space: nowrap; }
 }
@@ -383,6 +383,6 @@ html, body { overflow-x: hidden; }
   .hero h1 { font-size: 30px; }
 }
 @media print {
-  .top, .foot, .info, .more, .grid, .crumbs, .head-btns, .k-actions { display: none !important; }
+  .top, .foot, .toolpage > .info, .more, .grid, .crumbs, .head-btns, .k-actions { display: none !important; }
   .tool-frame { box-shadow: none; border: 0; padding: 0; }
 }
