@@ -50,3 +50,4 @@ MIT, see [LICENSE](LICENSE).
 ### Third-party data
 
 - Night Sky Planner star positions and constellation lines are derived from [d3-celestial](https://github.com/ofrohn/d3-celestial) by Olaf Frohn (BSD-3-Clause), based on the Yale Bright Star Catalogue.
+- Offline Spell Checker word list is from [SCOWL](http://wordlist.aspell.net/) (size 50, en_US), Copyright 2000-2026 by Kevin Atkinson, used under its permissive licence; the full notice is in `src/tools/lib/offline-spell-checker-words.txt`.
