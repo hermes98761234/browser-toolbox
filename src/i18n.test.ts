@@ -3,12 +3,14 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { tr, UK } from './i18n'
 
-/** Literal strings passed to t('…') or N('…') anywhere in src/, excluding tests. */
+/** Literal strings passed to t('…') or N('…') in the app shell (src/ minus tests and the English-only tools). */
 function usedKeys(dir = 'src'): string[] {
   const out: string[] = []
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
-    if (statSync(p).isDirectory()) out.push(...usedKeys(p))
+    if (statSync(p).isDirectory()) {
+      if (p !== join('src', 'tools')) out.push(...usedKeys(p))
+    }
     else if (/\.tsx?$/.test(name) && !name.includes('.test.')) {
       for (const m of readFileSync(p, 'utf8').matchAll(/\b[tN]\(\s*(['"`])((?:(?!\1).)*)\1/g)) out.push(m[2])
     }
