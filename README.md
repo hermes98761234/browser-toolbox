@@ -46,3 +46,7 @@ npm run build
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+### Third-party data
+
+- Night Sky Planner star positions and constellation lines are derived from [d3-celestial](https://github.com/ofrohn/d3-celestial) by Olaf Frohn (BSD-3-Clause), based on the Yale Bright Star Catalogue.
