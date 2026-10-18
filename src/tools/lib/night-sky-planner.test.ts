@@ -35,6 +35,26 @@ describe('bodies', () => {
     expect(p.frac).toBeGreaterThan(0.99)
     expect(p.name).toBe('Full Moon')
   })
+  it('moon phase instants match published new/full moon times within 10 min', () => {
+    // Root of (Moon − Sun longitude − target) found by bisection inside ±1 day of the published instant.
+    const instant = (approx: number, target: number) => {
+      const f = (t: number) => ((((moonPhase(t).ang - target + 180) % 360) + 360) % 360) - 180
+      let a = approx - 86400000, b = approx + 86400000
+      for (let i = 0; i < 50; i++) {
+        const m = (a + b) / 2
+        if (f(a) * f(m) <= 0) b = m
+        else a = m
+      }
+      return (a + b) / 2
+    }
+    const cases: [string, number][] = [
+      ['2026-02-17T12:01:00Z', 0], // new moon (annular solar eclipse)
+      ['2026-03-03T11:38:00Z', 180], // full moon (total lunar eclipse)
+      ['2026-01-18T19:52:00Z', 0], // new moon
+      ['2024-04-08T18:21:00Z', 0], // new moon (total solar eclipse)
+    ]
+    for (const [iso, target] of cases) expect(Math.abs(instant(utc(iso), target) - utc(iso)) / 60000).toBeLessThan(10)
+  })
   it('sunset in London on the solstice ≈ 20:21 UT', () => {
     const ev = nightEvents(utc('2026-06-21T12:00:00Z'), 51.5074, -0.1278)
     expect(Math.abs(ev.sun.set! - utc('2026-06-21T20:21:00Z'))).toBeLessThan(4 * 60000)

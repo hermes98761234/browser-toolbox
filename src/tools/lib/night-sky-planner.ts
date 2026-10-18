@@ -112,15 +112,26 @@ export function moonEq(ms: number) {
   return { ...eclToEq(m.lon, m.lat), dist: m.dist }
 }
 
-/** Moon phase: illuminated fraction 0..1, age-like angle 0..360 (0 new, 180 full) and a name. */
+const DELTA_T = 69000 // TT − UTC (≈ 69 s in the 2020s)
+
+/** Apparent geometric solar longitude of date incl. aberration (Meeus ch. 25, low accuracy), degrees. */
+export function sunLonOfDate(ms: number): number {
+  const T = centuries(ms + DELTA_T)
+  const L0 = 280.46646 + T * (36000.76983 + 0.0003032 * T)
+  const M = (357.52911 + T * (35999.05029 - 0.0001537 * T)) * RAD
+  const C = (1.914602 - T * (0.004817 + 0.000014 * T)) * Math.sin(M) + (0.019993 - 0.000101 * T) * Math.sin(2 * M) + 0.000289 * Math.sin(3 * M)
+  return norm360(L0 + C - 0.00569)
+}
+
+const PHASE8 = ['New Moon', 'Waxing crescent', 'First quarter', 'Waxing gibbous', 'Full Moon', 'Waning gibbous', 'Last quarter', 'Waning crescent']
+/**
+ * Moon phase: Moon − Sun ecliptic longitude of date (0 new, 90 first quarter, 180 full), illuminated
+ * fraction 0..1 and a name. Both longitudes are in the same frame (mean equinox of date, TT); mixing the
+ * J2000 heliocentric Earth vector with the of-date lunar longitude shifted phase instants by ~45 min.
+ */
 export function moonPhase(ms: number) {
-  const m = moonEcl(ms)
-  const E = helio('Earth', centuries(ms))
-  const sunLon = norm360(Math.atan2(-E[1], -E[0]) / RAD)
-  const ang = norm360(m.lon - sunLon)
-  const frac = (1 - Math.cos(ang * RAD)) / 2
-  const names = ['New Moon', 'Waxing crescent', 'First quarter', 'Waxing gibbous', 'Full Moon', 'Waning gibbous', 'Last quarter', 'Waning crescent']
-  return { frac, ang, name: names[Math.round(ang / 45) % 8] }
+  const ang = norm360(moonEcl(ms + DELTA_T).lon - sunLonOfDate(ms))
+  return { ang, frac: (1 - Math.cos(ang * RAD)) / 2, name: PHASE8[Math.round(ang / 45) % 8] }
 }
 
 /** Topocentric altitude of the Moon (parallax up to ~1°) + refraction. */

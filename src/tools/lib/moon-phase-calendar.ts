@@ -1,32 +1,16 @@
 // Moon phase calendar: principal phase instants (bisection on the Sun–Moon elongation from the
 // night-sky planner's Meeus lunar theory), per-day illumination, moon/sun rise and set, SVG moon shape
 // and time-zone helpers.
-import { centuries, crossings, moonEcl, moonHz } from './night-sky-planner'
+import { crossings, moonEcl, moonHz, moonPhase } from './night-sky-planner'
 import { sunPosition } from './sunrise-sunset-planner'
+
+// Shared with the night-sky planner (single implementation of the phase angle).
+export { moonPhase, sunLonOfDate } from './night-sky-planner'
 
 export const SYNODIC = 29.530588853
 const H = 3600000
 const DAY = 86400000
 const wrap180 = (x: number) => ((((x + 180) % 360) + 360) % 360) - 180
-
-const DELTA_T = 69000 // TT − UTC (≈ 69 s in the 2020s)
-const RAD = Math.PI / 180
-
-/** Geometric solar longitude of date + aberration (Meeus ch. 25, low accuracy), degrees. */
-export function sunLonOfDate(ms: number): number {
-  const T = centuries(ms + DELTA_T)
-  const L0 = 280.46646 + T * (36000.76983 + 0.0003032 * T)
-  const M = (357.52911 + T * (35999.05029 - 0.0001537 * T)) * RAD
-  const C = (1.914602 - T * (0.004817 + 0.000014 * T)) * Math.sin(M) + (0.019993 - 0.000101 * T) * Math.sin(2 * M) + 0.000289 * Math.sin(3 * M)
-  return (((L0 + C - 0.00569) % 360) + 360) % 360
-}
-
-const NAMES8 = ['New Moon', 'Waxing crescent', 'First quarter', 'Waxing gibbous', 'Full Moon', 'Waning gibbous', 'Last quarter', 'Waning crescent']
-/** Moon − Sun ecliptic longitude of date (0 new, 90 first quarter, 180 full), illuminated fraction and name. */
-export function moonPhase(ms: number) {
-  const ang = (((moonEcl(ms + DELTA_T).lon - sunLonOfDate(ms)) % 360) + 360) % 360
-  return { ang, frac: (1 - Math.cos(ang * RAD)) / 2, name: NAMES8[Math.round(ang / 45) % 8] }
-}
 
 export const PHASE_NAMES = ['New Moon', 'First Quarter', 'Full Moon', 'Last Quarter'] as const
 export interface PhaseEvent { t: number; q: 0 | 1 | 2 | 3 }
