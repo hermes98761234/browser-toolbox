@@ -1,0 +1,36 @@
+import { describe, expect, it } from 'vitest'
+import { bounds, calibrationCube, MeshBuilder, signedVolume, temperatureTower, retractionTower, overhangTest, bridgeTest } from './calibration-model-generator'
+
+describe('mesh primitives are closed and outward-facing', () => {
+  it('box, prism, cylinder, cone volumes', () => {
+    const b = new MeshBuilder()
+    b.box(0, 0, 0, 2, 3, 4)
+    expect(signedVolume(b.positions)).toBeCloseTo(24, 5)
+    const p = new MeshBuilder()
+    p.prismY([[0, 0], [2, 0], [0, 2]], 0, 5)
+    expect(signedVolume(p.positions)).toBeCloseTo(10, 5)
+    const c = new MeshBuilder()
+    c.cyl(1, 1, 0, 2, 1, 1, 256)
+    expect(signedVolume(c.positions)).toBeCloseTo(2 * Math.PI, 2)
+    const k = new MeshBuilder()
+    k.cyl(0, 0, 0, 3, 1, 0, 256)
+    expect(signedVolume(k.positions)).toBeCloseTo(Math.PI, 2)
+    const r = new MeshBuilder()
+    r.stroke([0, 0, 0], [1, 0, 0], [0, 0, 1], [0, -1, 0], 0, 0, 4, 0.7, 1, 0.5)
+    expect(signedVolume(r.positions)).toBeCloseTo(2, 5)
+  })
+  it('models have sensible extents', () => {
+    const cube = calibrationCube(20)
+    const bb = bounds(cube.pos)
+    expect(bb.max[2]).toBeCloseTo(20.59, 2)
+    expect(signedVolume(cube.pos)).toBeGreaterThan(8000)
+    const t = temperatureTower({ start: 230, end: 190, step: 5, segH: 10 })
+    expect(t.notes.length).toBe(9)
+    expect(t.notes[1].text).toContain('M104 S225')
+    expect(bounds(t.pos).max[2]).toBeCloseTo(91, 3)
+    expect(signedVolume(t.pos)).toBeGreaterThan(0)
+    expect(retractionTower({ segments: 5, start: 1, step: 0.5, segH: 8, spacing: 30 }).notes[4].text).toContain('3.00 mm')
+    expect(signedVolume(overhangTest({ from: 20, to: 70, step: 10, len: 10 }).pos)).toBeGreaterThan(0)
+    expect(bridgeTest([10, 20, 30], 8).notes.length).toBe(3)
+  })
+})
