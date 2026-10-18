@@ -628,4 +628,14 @@
 "barn-layout-designer":"2026-10-18T05:37:06.819Z",
 "box-size-recommender":"2026-10-18T05:37:06.847Z",
 "model-scale-converter":"2026-10-18T05:37:06.876Z",
-"inflation-calculator":"2026-10-18T05:37:06.904Z"}
+"inflation-calculator":"2026-10-18T05:37:06.904Z",
+"reverse-proxy-config-builder":"2026-10-18T06:04:54.202Z",
+"train-test-splitter":"2026-10-18T06:04:54.227Z",
+"op-amp-circuit-calculator":"2026-10-18T06:04:54.254Z",
+"bim-model-viewer":"2026-10-18T06:04:54.281Z",
+"water-heater-sizer":"2026-10-18T06:04:54.314Z",
+"oee-calculator":"2026-10-18T06:04:54.348Z",
+"optics-ray-tracer":"2026-10-18T06:04:54.376Z",
+"fourier-series-visualizer":"2026-10-18T06:04:54.411Z",
+"steganography-detector":"2026-10-18T06:04:54.442Z",
+"icon-sprite-builder":"2026-10-18T06:04:54.474Z"}
