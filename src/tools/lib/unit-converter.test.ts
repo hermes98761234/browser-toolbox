@@ -1,0 +1,51 @@
+import { describe, expect, it } from 'vitest'
+import { convert, dimString, fmtSig, lookup, parseUnit, quantityName, roundSig, sameDim, sigFigs } from './unit-converter'
+
+const cv = (v: number, a: string, b: string) => convert(v, parseUnit(a), parseUnit(b))
+
+describe('unit-converter', () => {
+  it('parses prefixes and compound units', () => {
+    expect(lookup('km')!.q.factor).toBe(1000)
+    expect(lookup('min')!.q.factor).toBe(60)
+    expect(lookup('mm')!.q.factor).toBeCloseTo(1e-3, 15)
+    expect(lookup('µs')!.q.factor).toBeCloseTo(1e-6, 18)
+    expect(lookup('kg')!.q.factor).toBeCloseTo(1, 12)
+    expect(sameDim(parseUnit('kg·m/s²').dim, parseUnit('N').dim)).toBe(true)
+    expect(sameDim(parseUnit('J/kg·K').dim, parseUnit('J/(kg·K)').dim)).toBe(true)
+    expect(sameDim(parseUnit('m/s/s').dim, parseUnit('m s^-2').dim)).toBe(true)
+    expect(dimString(parseUnit('W').dim)).toBe('m²·kg·s⁻³')
+    expect(quantityName(parseUnit('N·m').dim)).toContain('Energy')
+    expect(() => parseUnit('furlongz')).toThrow()
+  })
+  it('converts reference values', () => {
+    expect(cv(1, 'kWh', 'MJ')).toBeCloseTo(3.6, 12)
+    expect(cv(100, 'km/h', 'm/s')).toBeCloseTo(27.7778, 4)
+    expect(cv(1, 'atm', 'psi')).toBeCloseTo(14.6959, 4)
+    expect(cv(1, 'lbf', 'N')).toBeCloseTo(4.44822, 5)
+    expect(cv(1, 'g/cm³', 'kg/m³')).toBeCloseTo(1000, 9)
+    expect(cv(1, 'cal/(g·°C)', 'J/(kg·K)')).toBeCloseTo(4184, 9)
+    expect(cv(1, 'hp', 'W')).toBeCloseTo(745.7, 1)
+    expect(cv(1, 'mi', 'km')).toBeCloseTo(1.609344, 12)
+    expect(cv(1, 'm', 's')).toBeNaN()
+    expect(cv(2, 'mm²', 'm²')).toBeCloseTo(2e-6, 18)
+  })
+  it('handles absolute temperatures', () => {
+    expect(cv(100, '°C', '°F')).toBeCloseTo(212, 10)
+    expect(cv(-40, '°F', '°C')).toBeCloseTo(-40, 10)
+    expect(cv(0, '°C', 'K')).toBeCloseTo(273.15, 10)
+    expect(cv(32, 'degF', 'K')).toBeCloseTo(273.15, 10)
+  })
+  it('counts and rounds significant figures', () => {
+    expect(sigFigs('0.00450')).toBe(3)
+    expect(sigFigs('1200')).toBe(2)
+    expect(sigFigs('1200.')).toBe(4)
+    expect(sigFigs('1.20e3')).toBe(3)
+    expect(sigFigs('-7')).toBe(1)
+    expect(roundSig(27.77777, 3)).toBe(27.8)
+    expect(fmtSig(27.77777, 3)).toBe('27.8')
+    expect(fmtSig(0.00012345, 3)).toBe('1.23 × 10⁻⁴')
+    expect(fmtSig(6.02214e23, 4)).toBe('6.022 × 10²³')
+    expect(fmtSig(12345, 2, 'eng')).toBe('12 × 10³')
+    expect(fmtSig(1500, 2)).toBe('1500')
+  })
+})
