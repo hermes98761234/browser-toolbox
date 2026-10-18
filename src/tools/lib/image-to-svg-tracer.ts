@@ -1,7 +1,7 @@
-// Monochrome line-art tracer: thresholding (global / Otsu / adaptive), a potrace-style outline tracer
-// (path decomposition, optimal polygon, vertex adjustment, corner detection, Bézier smoothing and curve
-// optimisation, after Selinger 2003) and a centerline tracer (Zhang–Suen skeleton → stroke graph → Béziers).
-import { fitCurve, type P } from './vectorizer'
+// Monochrome line-art tracer: thresholding (global / Otsu / adaptive), an outline tracer (marching-squares
+// boundaries → turning-angle corner detection → Gaussian smoothing → piecewise Schneider Bézier fitting) and a
+// centerline tracer (Zhang–Suen skeleton → stroke graph → Béziers).
+import { contours, fitCurve, signedArea, type P } from './vectorizer'
 
 // ---------- bitmap preparation ----------
 
@@ -123,493 +123,212 @@ export function despeckle(bm: Uint8Array, w: number, h: number, minArea: number,
   return out
 }
 
-// ---------- potrace-style outline tracing ----------
+// ---------- outline tracing ----------
+// Boundary rings come from marching squares on the bitmap (outer boundaries and holes have opposite winding,
+// rendered with the even-odd rule). Each ring is examined for corners by its turning angle over a fixed arc
+// length; corners are sharpened by intersecting lines fitted to either side; the stretches between corners are
+// smoothed and fitted with cubic Béziers (Schneider), or emitted as straight lines when flat enough.
 
-interface Pt { x: number; y: number }
-interface Sum { x: number; y: number; xy: number; x2: number; y2: number }
-interface Curve { n: number; tag: ('CURVE' | 'CORNER')[]; c: Pt[]; vertex: Pt[]; alpha: number[]; alpha0: number[]; beta: number[] }
-interface Path { pt: Pt[]; len: number; area: number; sign: 1 | -1; maxX: number; x0: number; y0: number; sums: Sum[]; lon: number[]; po: number[]; m: number; curve: Curve }
-
-export type TurnPolicy = 'minority' | 'majority' | 'black' | 'white' | 'left' | 'right'
-export interface TraceOptions { turdSize: number; turnPolicy: TurnPolicy; alphaMax: number; optCurve: boolean; optTolerance: number }
-
-const mod = (a: number, n: number) => (a >= n ? a % n : a >= 0 ? a : n - 1 - ((-1 - a) % n))
-const sign = (x: number) => (x > 0 ? 1 : x < 0 ? -1 : 0)
-const xprod = (a: Pt, b: Pt) => a.x * b.y - a.y * b.x
-const cyclic = (a: number, b: number, c: number) => (a <= c ? a <= b && b < c : a <= b || b < c)
-const interval = (l: number, a: Pt, b: Pt): Pt => ({ x: a.x + l * (b.x - a.x), y: a.y + l * (b.y - a.y) })
-const dpara = (p0: Pt, p1: Pt, p2: Pt) => (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y)
-const ddenom = (p0: Pt, p2: Pt) => sign(p2.x - p0.x) * (p2.x - p0.x) - -sign(p2.y - p0.y) * (p2.y - p0.y)
-const cprod = (p0: Pt, p1: Pt, p2: Pt, p3: Pt) => (p1.x - p0.x) * (p3.y - p2.y) - (p3.x - p2.x) * (p1.y - p0.y)
-const iprod = (p0: Pt, p1: Pt, p2: Pt) => (p1.x - p0.x) * (p2.x - p0.x) + (p1.y - p0.y) * (p2.y - p0.y)
-const iprod1 = (p0: Pt, p1: Pt, p2: Pt, p3: Pt) => (p1.x - p0.x) * (p3.x - p2.x) + (p1.y - p0.y) * (p3.y - p2.y)
-const ddist = (p: Pt, q: Pt) => Math.hypot(p.x - q.x, p.y - q.y)
-
-function bezierPt(t: number, p0: Pt, p1: Pt, p2: Pt, p3: Pt): Pt {
-  const s = 1 - t
-  return {
-    x: s * s * s * p0.x + 3 * (s * s * t) * p1.x + 3 * (t * t * s) * p2.x + t * t * t * p3.x,
-    y: s * s * s * p0.y + 3 * (s * s * t) * p1.y + 3 * (t * t * s) * p2.y + t * t * t * p3.y,
-  }
-}
-function tangent(p0: Pt, p1: Pt, p2: Pt, p3: Pt, q0: Pt, q1: Pt): number {
-  const A = cprod(p0, p1, q0, q1), B = cprod(p1, p2, q0, q1), C = cprod(p2, p3, q0, q1)
-  const a = A - 2 * B + C, b = -2 * A + 2 * B, c = A
-  const d = b * b - 4 * a * c
-  if (a === 0 || d < 0) return -1
-  const s = Math.sqrt(d)
-  const r1 = (-b + s) / (2 * a), r2 = (-b - s) / (2 * a)
-  return r1 >= 0 && r1 <= 1 ? r1 : r2 >= 0 && r2 <= 1 ? r2 : -1
-}
-
-/** Decompose the bitmap into closed boundary paths (potrace §2.1), xor-ing each interior away. */
-function decompose(bm0: Uint8Array, w: number, h: number, o: TraceOptions): Path[] {
-  const bm = bm0.slice()
-  const at = (x: number, y: number) => x >= 0 && x < w && y >= 0 && y < h && bm[y * w + x] === 1
-  const at0 = (x: number, y: number) => x >= 0 && x < w && y >= 0 && y < h && bm0[y * w + x] === 1
-  const majority = (x: number, y: number) => {
-    for (let i = 2; i < 5; i++) {
-      let ct = 0
-      for (let a = -i + 1; a <= i - 1; a++) {
-        ct += at(x + a, y + i - 1) ? 1 : -1
-        ct += at(x + i - 1, y + a - 1) ? 1 : -1
-        ct += at(x + a - 1, y - i) ? 1 : -1
-        ct += at(x - i, y + a) ? 1 : -1
-      }
-      if (ct > 0) return true
-      if (ct < 0) return false
-    }
-    return false
-  }
-  const paths: Path[] = []
-  let idx = 0
-  for (;;) {
-    while (idx < w * h && bm[idx] !== 1) idx++
-    if (idx >= w * h) break
-    const sx = idx % w, sy = (idx - sx) / w
-    const pt: Pt[] = []
-    let x = sx, y = sy, dirx = 0, diry = 1, area = 0, maxX = 0
-    const sgn: 1 | -1 = at0(sx, sy) ? 1 : -1
-    for (;;) {
-      pt.push({ x, y })
-      if (x > maxX) maxX = x
-      x += dirx; y += diry
-      area -= x * diry
-      if (x === sx && y === sy) break
-      const l = at(x + (dirx + diry - 1) / 2, y + (diry - dirx - 1) / 2)
-      const r = at(x + (dirx - diry - 1) / 2, y + (diry + dirx - 1) / 2)
-      let tmp: number
-      if (r && !l) {
-        const p = o.turnPolicy
-        if (p === 'right' || (p === 'black' && sgn === 1) || (p === 'white' && sgn === -1) || (p === 'majority' && majority(x, y)) || (p === 'minority' && !majority(x, y))) { tmp = dirx; dirx = -diry; diry = tmp }
-        else { tmp = dirx; dirx = diry; diry = -tmp }
-      } else if (r) { tmp = dirx; dirx = -diry; diry = tmp }
-      else if (!l) { tmp = dirx; dirx = diry; diry = -tmp }
-    }
-    // xor the interior so the next scan finds holes / remaining shapes
-    let y1 = pt[0].y
-    for (let i = 1; i < pt.length; i++) {
-      const px = pt[i].x, py = pt[i].y
-      if (py !== y1) {
-        const minY = Math.min(y1, py)
-        for (let j = px; j < maxX; j++) bm[minY * w + j] ^= 1
-        y1 = py
-      }
-    }
-    if (Math.abs(area) > o.turdSize) paths.push({ pt, len: pt.length, area, sign: sgn, maxX, x0: 0, y0: 0, sums: [], lon: [], po: [], m: 0, curve: null as unknown as Curve })
-  }
-  return paths
-}
-
-function calcSums(p: Path) {
-  p.x0 = p.pt[0].x; p.y0 = p.pt[0].y
-  const s: Sum[] = [{ x: 0, y: 0, xy: 0, x2: 0, y2: 0 }]
-  for (let i = 0; i < p.len; i++) {
-    const x = p.pt[i].x - p.x0, y = p.pt[i].y - p.y0, q = s[i]
-    s.push({ x: q.x + x, y: q.y + y, xy: q.xy + x * y, x2: q.x2 + x * x, y2: q.y2 + y * y })
-  }
-  p.sums = s
-}
-
-/** For each point, the furthest point reachable by a straight subpath (potrace §2.2). */
-function calcLon(p: Path) {
-  const n = p.len, pt = p.pt
-  const pivk = new Array<number>(n), nc = new Array<number>(n), ct = [0, 0, 0, 0]
-  p.lon = new Array<number>(n)
-  const constraint: Pt[] = [{ x: 0, y: 0 }, { x: 0, y: 0 }]
-  const cur: Pt = { x: 0, y: 0 }, off: Pt = { x: 0, y: 0 }, dk: Pt = { x: 0, y: 0 }
-  let k = 0
-  for (let i = n - 1; i >= 0; i--) {
-    if (pt[i].x !== pt[k].x && pt[i].y !== pt[k].y) k = i + 1
-    nc[i] = k
-  }
-  for (let i = n - 1; i >= 0; i--) {
-    ct[0] = ct[1] = ct[2] = ct[3] = 0
-    let dir = (3 + 3 * (pt[mod(i + 1, n)].x - pt[i].x) + (pt[mod(i + 1, n)].y - pt[i].y)) / 2
-    ct[dir]++
-    constraint[0].x = constraint[0].y = constraint[1].x = constraint[1].y = 0
-    k = nc[i]
-    let k1 = i, found = false
-    for (;;) {
-      dir = (3 + 3 * sign(pt[k].x - pt[k1].x) + sign(pt[k].y - pt[k1].y)) / 2
-      ct[dir]++
-      if (ct[0] && ct[1] && ct[2] && ct[3]) { pivk[i] = k1; found = true; break }
-      cur.x = pt[k].x - pt[i].x; cur.y = pt[k].y - pt[i].y
-      if (xprod(constraint[0], cur) < 0 || xprod(constraint[1], cur) > 0) break
-      if (Math.abs(cur.x) > 1 || Math.abs(cur.y) > 1) {
-        off.x = cur.x + (cur.y >= 0 && (cur.y > 0 || cur.x < 0) ? 1 : -1)
-        off.y = cur.y + (cur.x <= 0 && (cur.x < 0 || cur.y < 0) ? 1 : -1)
-        if (xprod(constraint[0], off) >= 0) { constraint[0].x = off.x; constraint[0].y = off.y }
-        off.x = cur.x + (cur.y <= 0 && (cur.y < 0 || cur.x < 0) ? 1 : -1)
-        off.y = cur.y + (cur.x >= 0 && (cur.x > 0 || cur.y < 0) ? 1 : -1)
-        if (xprod(constraint[1], off) <= 0) { constraint[1].x = off.x; constraint[1].y = off.y }
-      }
-      k1 = k
-      k = nc[k1]
-      if (!cyclic(k, i, k1)) break
-    }
-    if (!found) {
-      dk.x = sign(pt[k].x - pt[k1].x); dk.y = sign(pt[k].y - pt[k1].y)
-      cur.x = pt[k1].x - pt[i].x; cur.y = pt[k1].y - pt[i].y
-      const a = xprod(constraint[0], cur), b = xprod(constraint[0], dk), c = xprod(constraint[1], cur), d = xprod(constraint[1], dk)
-      let j = 10000000
-      if (b < 0) j = Math.floor(a / -b)
-      if (d > 0) j = Math.min(j, Math.floor(-c / d))
-      pivk[i] = mod(k1 + j, n)
-    }
-  }
-  let j = pivk[n - 1]
-  p.lon[n - 1] = j
-  for (let i = n - 2; i >= 0; i--) {
-    if (cyclic(i + 1, pivk[i], j)) j = pivk[i]
-    p.lon[i] = j
-  }
-  for (let i = n - 1; cyclic(mod(i + 1, n), j, p.lon[i]); i--) p.lon[i] = j
-}
-
-function penalty3(p: Path, i: number, j: number): number {
-  const n = p.len, pt = p.pt, s = p.sums
-  let r = 0
-  if (j >= n) { j -= n; r = 1 }
-  const x = s[j + 1].x - s[i].x + r * s[n].x, y = s[j + 1].y - s[i].y + r * s[n].y
-  const x2 = s[j + 1].x2 - s[i].x2 + r * s[n].x2, xy = s[j + 1].xy - s[i].xy + r * s[n].xy, y2 = s[j + 1].y2 - s[i].y2 + r * s[n].y2
-  const k = j + 1 - i + r * n
-  const px = (pt[i].x + pt[j].x) / 2 - pt[0].x, py = (pt[i].y + pt[j].y) / 2 - pt[0].y
-  const ey = pt[j].x - pt[i].x, ex = -(pt[j].y - pt[i].y)
-  const a = (x2 - 2 * x * px) / k + px * px, b = (xy - x * py - y * px) / k + px * py, c = (y2 - 2 * y * py) / k + py * py
-  return Math.sqrt(Math.max(0, ex * ex * a + 2 * ex * ey * b + ey * ey * c))
-}
-
-/** Optimal polygon: fewest segments, then least penalty (potrace §2.2.3). */
-function bestPolygon(p: Path) {
-  const n = p.len
-  const pen = new Array<number>(n + 1), prev = new Array<number>(n + 1), clip0 = new Array<number>(n), clip1 = new Array<number>(n + 1), seg0 = new Array<number>(n + 1), seg1 = new Array<number>(n + 1)
-  for (let i = 0; i < n; i++) {
-    let c = mod(p.lon[mod(i - 1, n)] - 1, n)
-    if (c === i) c = mod(i + 1, n)
-    clip0[i] = c < i ? n : c
-  }
-  let j = 1
-  for (let i = 0; i < n; i++) while (j <= clip0[i]) { clip1[j] = i; j++ }
-  let i = 0
-  for (j = 0; i < n; j++) { seg0[j] = i; i = clip0[i] }
-  seg0[j] = n
-  const m = j
-  i = n
-  for (j = m; j > 0; j--) { seg1[j] = i; i = clip1[i] }
-  seg1[0] = 0
-  pen[0] = 0
-  for (j = 1; j <= m; j++) {
-    for (i = seg1[j]; i <= seg0[j]; i++) {
-      let best = -1
-      for (let k = seg0[j - 1]; k >= clip1[i]; k--) {
-        const t = penalty3(p, k, i) + pen[k]
-        if (best < 0 || t < best) { prev[i] = k; best = t }
-      }
-      pen[i] = best
-    }
-  }
-  p.m = m
-  p.po = new Array<number>(m)
-  for (i = n, j = m - 1; i > 0; j--) { i = prev[i]; p.po[j] = i }
-}
-
-function pointSlope(p: Path, i: number, j: number, ctr: Pt, dir: Pt) {
-  const n = p.len, s = p.sums
-  let r = 0
-  while (j >= n) { j -= n; r++ }
-  while (i >= n) { i -= n; r-- }
-  while (j < 0) { j += n; r-- }
-  while (i < 0) { i += n; r++ }
-  const x = s[j + 1].x - s[i].x + r * s[n].x, y = s[j + 1].y - s[i].y + r * s[n].y
-  const x2 = s[j + 1].x2 - s[i].x2 + r * s[n].x2, xy = s[j + 1].xy - s[i].xy + r * s[n].xy, y2 = s[j + 1].y2 - s[i].y2 + r * s[n].y2
-  const k = j + 1 - i + r * n
-  ctr.x = x / k; ctr.y = y / k
-  let a = (x2 - (x * x) / k) / k
-  const b = (xy - (x * y) / k) / k
-  let c = (y2 - (y * y) / k) / k
-  const l2 = (a + c + Math.sqrt((a - c) * (a - c) + 4 * b * b)) / 2
-  a -= l2; c -= l2
-  let l: number
-  if (Math.abs(a) >= Math.abs(c)) { l = Math.hypot(a, b); if (l) { dir.x = -b / l; dir.y = a / l } }
-  else { l = Math.hypot(c, b); if (l) { dir.x = -c / l; dir.y = b / l } }
-  if (!l) dir.x = dir.y = 0
-}
-
-type Quad = number[]
-const quadForm = (Q: Quad, w: Pt) => {
-  const v = [w.x, w.y, 1]
-  let s = 0
-  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) s += v[i] * Q[i * 3 + j] * v[j]
-  return s
-}
-
-function newCurve(n: number): Curve {
-  return { n, tag: new Array(n), c: new Array(n * 3), vertex: new Array(n), alpha: new Array(n), alpha0: new Array(n), beta: new Array(n) }
-}
-
-/** Places each polygon vertex at the least-squares intersection of its two adjacent lines, within its pixel (§2.3). */
-function adjustVertices(p: Path) {
-  const m = p.m, po = p.po, n = p.len, pt = p.pt, x0 = p.x0, y0 = p.y0
-  const ctr: Pt[] = [], dir: Pt[] = [], q: Quad[] = []
-  p.curve = newCurve(m)
-  for (let i = 0; i < m; i++) {
-    let j = po[mod(i + 1, m)]
-    j = mod(j - po[i], n) + po[i]
-    ctr[i] = { x: 0, y: 0 }; dir[i] = { x: 0, y: 0 }
-    pointSlope(p, po[i], j, ctr[i], dir[i])
-  }
-  for (let i = 0; i < m; i++) {
-    const d = dir[i].x ** 2 + dir[i].y ** 2
-    const Qi = new Array<number>(9).fill(0)
-    if (d) {
-      const v = [dir[i].y, -dir[i].x, 0]
-      v[2] = -v[1] * ctr[i].y - v[0] * ctr[i].x
-      for (let l = 0; l < 3; l++) for (let k = 0; k < 3; k++) Qi[l * 3 + k] = (v[l] * v[k]) / d
-    }
-    q[i] = Qi
-  }
-  for (let i = 0; i < m; i++) {
-    const s: Pt = { x: pt[po[i]].x - x0, y: pt[po[i]].y - y0 }
-    const j = mod(i - 1, m)
-    const Q = q[j].map((v, k) => v + q[i][k])
-    const w: Pt = { x: 0, y: 0 }
-    for (;;) {
-      const det = Q[0] * Q[4] - Q[1] * Q[3]
-      if (det) {
-        w.x = (-Q[2] * Q[4] + Q[5] * Q[1]) / det
-        w.y = (Q[2] * Q[3] - Q[5] * Q[0]) / det
-        break
-      }
-      const v = [0, 0, 0]
-      if (Q[0] > Q[4]) { v[0] = -Q[1]; v[1] = Q[0] }
-      else if (Q[4]) { v[0] = -Q[4]; v[1] = Q[3] }
-      else { v[0] = 1; v[1] = 0 }
-      const d = v[0] * v[0] + v[1] * v[1]
-      v[2] = -v[1] * s.y - v[0] * s.x
-      for (let l = 0; l < 3; l++) for (let k = 0; k < 3; k++) Q[l * 3 + k] += (v[l] * v[k]) / d
-    }
-    if (Math.abs(w.x - s.x) <= 0.5 && Math.abs(w.y - s.y) <= 0.5) { p.curve.vertex[i] = { x: w.x + x0, y: w.y + y0 }; continue }
-    let min = quadForm(Q, s), xmin = s.x, ymin = s.y
-    if (Q[0]) for (let z = 0; z < 2; z++) {
-      w.y = s.y - 0.5 + z
-      w.x = -(Q[1] * w.y + Q[2]) / Q[0]
-      const cand = quadForm(Q, w)
-      if (Math.abs(w.x - s.x) <= 0.5 && cand < min) { min = cand; xmin = w.x; ymin = w.y }
-    }
-    if (Q[4]) for (let z = 0; z < 2; z++) {
-      w.x = s.x - 0.5 + z
-      w.y = -(Q[3] * w.x + Q[5]) / Q[4]
-      const cand = quadForm(Q, w)
-      if (Math.abs(w.y - s.y) <= 0.5 && cand < min) { min = cand; xmin = w.x; ymin = w.y }
-    }
-    for (let l = 0; l < 2; l++) for (let k = 0; k < 2; k++) {
-      w.x = s.x - 0.5 + l; w.y = s.y - 0.5 + k
-      const cand = quadForm(Q, w)
-      if (cand < min) { min = cand; xmin = w.x; ymin = w.y }
-    }
-    p.curve.vertex[i] = { x: xmin + x0, y: ymin + y0 }
-  }
-}
-
-/** Corner detection and Bézier smoothing controlled by alphaMax (§2.3.2). */
-function smoothCurve(p: Path, alphaMax: number) {
-  const cv = p.curve, m = cv.n
-  for (let i = 0; i < m; i++) {
-    const j = mod(i + 1, m), k = mod(i + 2, m)
-    const p4 = interval(0.5, cv.vertex[k], cv.vertex[j])
-    const denom = ddenom(cv.vertex[i], cv.vertex[k])
-    let alpha: number
-    if (denom !== 0) {
-      const dd = Math.abs(dpara(cv.vertex[i], cv.vertex[j], cv.vertex[k]) / denom)
-      alpha = (dd > 1 ? 1 - 1 / dd : 0) / 0.75
-    } else alpha = 4 / 3
-    cv.alpha0[j] = alpha
-    if (alpha >= alphaMax) {
-      cv.tag[j] = 'CORNER'
-      cv.c[3 * j + 1] = cv.vertex[j]
-      cv.c[3 * j + 2] = p4
-    } else {
-      alpha = Math.max(0.55, Math.min(1, alpha))
-      cv.tag[j] = 'CURVE'
-      cv.c[3 * j] = interval(0.5 + 0.5 * alpha, cv.vertex[i], cv.vertex[j])
-      cv.c[3 * j + 1] = interval(0.5 + 0.5 * alpha, cv.vertex[k], cv.vertex[j])
-      cv.c[3 * j + 2] = p4
-    }
-    cv.alpha[j] = alpha
-    cv.beta[j] = 0.5
-  }
-}
-
-interface Opti { pen: number; c: [Pt, Pt]; t: number; s: number; alpha: number }
-
-function optiPenalty(p: Path, i: number, j: number, res: Opti, tol: number, convc: number[], areac: number[]): boolean {
-  const cv = p.curve, m = cv.n, V = cv.vertex
-  if (i === j) return true
-  const i1 = mod(i + 1, m)
-  let k1 = mod(i + 1, m)
-  const conv = convc[k1]
-  if (conv === 0) return true
-  const d = ddist(V[i], V[i1])
-  for (let k = k1; k !== j; k = k1) {
-    k1 = mod(k + 1, m)
-    const k2 = mod(k + 2, m)
-    if (convc[k1] !== conv) return true
-    if (sign(cprod(V[i], V[i1], V[k1], V[k2])) !== conv) return true
-    if (iprod1(V[i], V[i1], V[k1], V[k2]) < d * ddist(V[k1], V[k2]) * -0.999847695156) return true
-  }
-  const p0 = cv.c[mod(i, m) * 3 + 2], p1 = V[mod(i + 1, m)], p2 = V[mod(j, m)], p3 = cv.c[mod(j, m) * 3 + 2]
-  let area = areac[j] - areac[i]
-  area -= dpara(V[0], cv.c[i * 3 + 2], cv.c[j * 3 + 2]) / 2
-  if (i >= j) area += areac[m]
-  const A1 = dpara(p0, p1, p2), A2 = dpara(p0, p1, p3), A3 = dpara(p0, p2, p3)
-  const A4 = A1 + A3 - A2
-  if (A2 === A1) return true
-  let t = A3 / (A3 - A4)
-  const s = A2 / (A2 - A1)
-  const A = (A2 * t) / 2
-  if (A === 0) return true
-  const R = area / A
-  const alpha = 2 - Math.sqrt(4 - R / 0.3)
-  res.c = [interval(t * alpha, p0, p1), interval(s * alpha, p3, p2)]
-  res.alpha = alpha; res.t = t; res.s = s
-  const q1 = res.c[0], q2 = res.c[1]
-  res.pen = 0
-  for (let k = mod(i + 1, m); k !== j; k = k1) {
-    k1 = mod(k + 1, m)
-    t = tangent(p0, q1, q2, p3, V[k], V[k1])
-    if (t < -0.5) return true
-    const pt = bezierPt(t, p0, q1, q2, p3)
-    const dd = ddist(V[k], V[k1])
-    if (dd === 0) return true
-    const d1 = dpara(V[k], V[k1], pt) / dd
-    if (Math.abs(d1) > tol) return true
-    if (iprod(V[k], V[k1], pt) < 0 || iprod(V[k1], V[k], pt) < 0) return true
-    res.pen += d1 * d1
-  }
-  for (let k = i; k !== j; k = k1) {
-    k1 = mod(k + 1, m)
-    t = tangent(p0, q1, q2, p3, cv.c[k * 3 + 2], cv.c[k1 * 3 + 2])
-    if (t < -0.5) return true
-    const pt = bezierPt(t, p0, q1, q2, p3)
-    const dd = ddist(cv.c[k * 3 + 2], cv.c[k1 * 3 + 2])
-    if (dd === 0) return true
-    let d1 = dpara(cv.c[k * 3 + 2], cv.c[k1 * 3 + 2], pt) / dd
-    let d2 = (dpara(cv.c[k * 3 + 2], cv.c[k1 * 3 + 2], V[k1]) / dd) * 0.75 * cv.alpha[k1]
-    if (d2 < 0) { d1 = -d1; d2 = -d2 }
-    if (d1 < d2 - tol) return true
-    if (d1 < d2) res.pen += (d1 - d2) ** 2
-  }
-  return false
-}
-
-/** Joins runs of Bézier segments into fewer curves within `tol` (§2.4). */
-function optiCurve(p: Path, tol: number) {
-  const cv = p.curve, m = cv.n, V = cv.vertex
-  const pt = new Array<number>(m + 1), pen = new Array<number>(m + 1), len = new Array<number>(m + 1), opt = new Array<Opti>(m + 1)
-  const convc = new Array<number>(m), areac = new Array<number>(m + 1)
-  for (let i = 0; i < m; i++) convc[i] = cv.tag[i] === 'CURVE' ? sign(dpara(V[mod(i - 1, m)], V[i], V[mod(i + 1, m)])) : 0
-  let area = 0
-  areac[0] = 0
-  const p0 = V[0]
-  for (let i = 0; i < m; i++) {
-    const i1 = mod(i + 1, m)
-    if (cv.tag[i1] === 'CURVE') {
-      const al = cv.alpha[i1]
-      area += (0.3 * al * (4 - al) * dpara(cv.c[i * 3 + 2], V[i1], cv.c[i1 * 3 + 2])) / 2
-      area += dpara(p0, cv.c[i * 3 + 2], cv.c[i1 * 3 + 2]) / 2
-    }
-    areac[i + 1] = area
-  }
-  pt[0] = -1; pen[0] = 0; len[0] = 0
-  let o: Opti = { pen: 0, c: [{ x: 0, y: 0 }, { x: 0, y: 0 }], t: 0, s: 0, alpha: 0 }
-  for (let j = 1; j <= m; j++) {
-    pt[j] = j - 1; pen[j] = pen[j - 1]; len[j] = len[j - 1] + 1
-    for (let i = j - 2; i >= 0; i--) {
-      if (optiPenalty(p, i, mod(j, m), o, tol, convc, areac)) break
-      if (len[j] > len[i] + 1 || (len[j] === len[i] + 1 && pen[j] > pen[i] + o.pen)) {
-        pt[j] = i; pen[j] = pen[i] + o.pen; len[j] = len[i] + 1; opt[j] = o
-        o = { pen: 0, c: [{ x: 0, y: 0 }, { x: 0, y: 0 }], t: 0, s: 0, alpha: 0 }
-      }
-    }
-  }
-  const om = len[m]
-  const oc = newCurve(om)
-  const s = new Array<number>(om), t = new Array<number>(om)
-  let j = m
-  for (let i = om - 1; i >= 0; i--) {
-    const jm = mod(j, m)
-    if (pt[j] === j - 1) {
-      oc.tag[i] = cv.tag[jm]
-      oc.c[i * 3] = cv.c[jm * 3]; oc.c[i * 3 + 1] = cv.c[jm * 3 + 1]; oc.c[i * 3 + 2] = cv.c[jm * 3 + 2]
-      oc.vertex[i] = V[jm]; oc.alpha[i] = cv.alpha[jm]; oc.alpha0[i] = cv.alpha0[jm]; oc.beta[i] = cv.beta[jm]
-      s[i] = t[i] = 1
-    } else {
-      oc.tag[i] = 'CURVE'
-      oc.c[i * 3] = opt[j].c[0]; oc.c[i * 3 + 1] = opt[j].c[1]; oc.c[i * 3 + 2] = cv.c[jm * 3 + 2]
-      oc.vertex[i] = interval(opt[j].s, cv.c[jm * 3 + 2], V[jm])
-      oc.alpha[i] = oc.alpha0[i] = opt[j].alpha
-      s[i] = opt[j].s; t[i] = opt[j].t
-    }
-    j = pt[j]
-  }
-  for (let i = 0; i < om; i++) oc.beta[i] = s[i] / (s[i] + t[mod(i + 1, om)])
-  p.curve = oc
+export interface OutlineOptions {
+  /** rings enclosing fewer pixels than this are dropped */
+  minArea: number
+  /** turning angle (degrees, over ~3 px of outline) above which a point is kept as a sharp corner; ≥180 = none */
+  cornerAngle: number
+  /** Gaussian smoothing radius (px) applied between corners */
+  smoothness: number
+  /** maximum Bézier fitting error (px) */
+  tolerance: number
 }
 
 const f2 = (v: number) => String(Math.round(v * 100) / 100)
+const unit = (x: number, y: number): P => { const l = Math.hypot(x, y); return l ? [x / l, y / l] : [0, 0] }
 
-function curveToD(cv: Curve): { d: string; curves: number; lines: number } {
-  const n = cv.n
-  let curves = 0, lines = 0
-  let d = `M${f2(cv.c[(n - 1) * 3 + 2].x)} ${f2(cv.c[(n - 1) * 3 + 2].y)}`
+function cumulative(p: P[], closed: boolean): number[] {
+  const s = [0]
+  for (let i = 1; i < p.length; i++) s.push(s[i - 1] + Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]))
+  if (closed && p.length) s.push(s[p.length - 1] + Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]))
+  return s
+}
+
+/**
+ * Gaussian smoothing along the polyline (σ in px, converted to samples by the mean spacing). Open polylines use a
+ * window that shrinks symmetrically towards the ends, so end points stay put and straight runs stay straight.
+ */
+function gauss(p: P[], sigmaPx: number, closed: boolean): P[] {
+  const n = p.length
+  if (sigmaPx <= 0 || n < 3) return p
+  const s = cumulative(p, closed)
+  const spacing = s[s.length - 1] / (closed ? n : n - 1) || 1
+  const sig = sigmaPx / spacing
+  const R = Math.min(Math.ceil(2.5 * sig), closed ? Math.floor((n - 1) / 2) : n)
+  const wt = Array.from({ length: R + 1 }, (_, k) => Math.exp((-k * k) / (2 * sig * sig)))
+  const out: P[] = new Array(n)
   for (let i = 0; i < n; i++) {
-    const c = cv.c
-    if (cv.tag[i] === 'CURVE') { d += `C${f2(c[i * 3].x)} ${f2(c[i * 3].y)} ${f2(c[i * 3 + 1].x)} ${f2(c[i * 3 + 1].y)} ${f2(c[i * 3 + 2].x)} ${f2(c[i * 3 + 2].y)}`; curves++ }
-    else { d += `L${f2(c[i * 3 + 1].x)} ${f2(c[i * 3 + 1].y)}L${f2(c[i * 3 + 2].x)} ${f2(c[i * 3 + 2].y)}`; lines += 2 }
+    const r = closed ? R : Math.min(R, i, n - 1 - i)
+    let x = p[i][0], y = p[i][1], ws = 1
+    for (let k = 1; k <= r; k++) {
+      const a = p[closed ? (i - k + n) % n : i - k], b = p[closed ? (i + k) % n : i + k]
+      x += wt[k] * (a[0] + b[0]); y += wt[k] * (a[1] + b[1]); ws += 2 * wt[k]
+    }
+    out[i] = [x / ws, y / ws]
   }
-  return { d: d + 'Z', curves, lines }
+  return out
+}
+
+/** Shrink-compensated smoothing ("twicing", 2G − G∘G): removes pixel steps without pulling curves inwards. */
+function smoothKeep(p: P[], sigmaPx: number, closed: boolean): P[] {
+  const g = gauss(p, sigmaPx, closed)
+  if (g === p) return p
+  const gg = gauss(g, sigmaPx, closed)
+  return g.map((q, i) => [2 * q[0] - gg[i][0], 2 * q[1] - gg[i][1]] as P)
+}
+
+/** Index of the sample `dist` px of arc away from i (dir = ±1) on a closed ring with arc table s. */
+function walk(s: number[], i: number, dist: number, dir: 1 | -1): number {
+  const n = s.length - 1, T = s[n]
+  let j = i, d = 0
+  while (d < dist) {
+    const k = dir > 0 ? (j + 1) % n : (j - 1 + n) % n
+    d += dir > 0 ? (k === 0 ? T - s[j] : s[k] - s[j]) : (j === 0 ? T - s[k] : s[j] - s[k])
+    j = k
+    if (j === i) break
+  }
+  return j
+}
+
+/** Sharp corners of a closed ring: local maxima of the turning angle measured between chords of length `reach`. */
+function sharpPoints(p: P[], deg: number, reach: number): number[] {
+  const n = p.length
+  if (deg >= 180) return []
+  const s = cumulative(p, true)
+  if (s[n] < reach * 6) return []
+  const turn = new Float64Array(n), back = new Int32Array(n), fwd = new Int32Array(n)
+  for (let i = 0; i < n; i++) {
+    back[i] = walk(s, i, reach, -1); fwd[i] = walk(s, i, reach, 1)
+    const a = unit(p[i][0] - p[back[i]][0], p[i][1] - p[back[i]][1]), b = unit(p[fwd[i]][0] - p[i][0], p[fwd[i]][1] - p[i][1])
+    turn[i] = (Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1]))) * 180) / Math.PI
+  }
+  const out: number[] = []
+  for (let i = 0; i < n; i++) {
+    if (turn[i] <= deg) continue
+    let best = true
+    // non-maximum suppression within the measuring reach (ties go to the earlier sample)
+    for (let j = back[i]; j !== i && best; j = (j + 1) % n) if (turn[j] >= turn[i]) best = false
+    for (let j = (i + 1) % n; j !== fwd[i] && best; j = (j + 1) % n) if (turn[j] > turn[i]) best = false
+    if (best) out.push(i)
+  }
+  return out
+}
+
+/** Least-squares line (centroid + principal direction) through points. */
+function lineFit(pts: P[]): { c: P; d: P } | null {
+  if (pts.length < 2) return null
+  let cx = 0, cy = 0
+  for (const [x, y] of pts) { cx += x; cy += y }
+  cx /= pts.length; cy /= pts.length
+  let sxx = 0, sxy = 0, syy = 0
+  for (const [x, y] of pts) { sxx += (x - cx) ** 2; sxy += (x - cx) * (y - cy); syy += (y - cy) ** 2 }
+  const ang = 0.5 * Math.atan2(2 * sxy, sxx - syy)
+  return { c: [cx, cy], d: [Math.cos(ang), Math.sin(ang)] }
+}
+
+/** Moves a corner to the intersection of lines fitted to the outline just before and just after it. */
+function crispCorner(p: P[], s: number[], i: number, room: number): P {
+  const n = p.length, T = s[n]
+  const side = (dir: 1 | -1): P[] => {
+    const pts: P[] = []
+    let j = i, d = 0
+    while (d < Math.min(5, room)) {
+      const k = dir > 0 ? (j + 1) % n : (j - 1 + n) % n
+      d += dir > 0 ? (k === 0 ? T - s[j] : s[k] - s[j]) : (j === 0 ? T - s[k] : s[j] - s[k])
+      j = k
+      if (d > 1.2) pts.push(p[j])
+    }
+    return pts
+  }
+  const A = lineFit(side(-1)), B = lineFit(side(1))
+  if (!A || !B) return p[i]
+  const den = A.d[0] * B.d[1] - A.d[1] * B.d[0]
+  if (Math.abs(den) < 0.2) return p[i] // nearly parallel: keep the sample
+  const t = ((B.c[0] - A.c[0]) * B.d[1] - (B.c[1] - A.c[1]) * B.d[0]) / den
+  const q: P = [A.c[0] + t * A.d[0], A.c[1] + t * A.d[1]]
+  return Math.hypot(q[0] - p[i][0], q[1] - p[i][1]) <= 1.5 ? q : p[i]
+}
+
+/** Unit direction from point a towards the sample about `len` px of arc further along the list. */
+function lead(p: P[], len: number): P {
+  let d = 0
+  for (let k = 1; k < p.length; k++) {
+    d += Math.hypot(p[k][0] - p[k - 1][0], p[k][1] - p[k - 1][1])
+    if (d >= len || k === p.length - 1) return unit(p[k][0] - p[0][0], p[k][1] - p[0][1])
+  }
+  return [0, 0]
+}
+
+function chordDeviation(p: P[]): number {
+  const a = p[0], b = p[p.length - 1]
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy)
+  let m = 0
+  for (const q of p) m = Math.max(m, L ? Math.abs(dx * (q[1] - a[1]) - dy * (q[0] - a[0])) / L : Math.hypot(q[0] - a[0], q[1] - a[1]))
+  return m
+}
+
+interface RingOut { d: string; curves: number; lines: number; corners: number }
+
+function emitRing(ring: P[], o: OutlineOptions): RingOut {
+  const n = ring.length
+  const tol = Math.max(0.05, o.tolerance)
+  if (n < 8) return { d: 'M' + ring.map(([x, y]) => `${f2(x)} ${f2(y)}`).join('L') + 'Z', curves: 0, lines: n, corners: 0 }
+  const guide = gauss(ring, 1, true) // de-stepped copy used only to find and place corners
+  const cs = sharpPoints(guide, o.cornerAngle, 3)
+  const head = (pt: P) => `M${f2(pt[0])} ${f2(pt[1])}`
+  const cub = (b: [P, P, P, P]) => `C${f2(b[1][0])} ${f2(b[1][1])} ${f2(b[2][0])} ${f2(b[2][1])} ${f2(b[3][0])} ${f2(b[3][1])}`
+
+  if (!cs.length) {
+    // smooth closed curve: fit the whole loop with a shared tangent at the seam so it closes without a kink
+    const sm = smoothKeep(ring, o.smoothness, true)
+    const t = unit(sm[1][0] - sm[n - 1][0], sm[1][1] - sm[n - 1][1])
+    const half = n >> 1
+    const bz = [...fitCurve(sm.slice(0, half + 1), tol, t, unit(sm[half - 1][0] - sm[half + 1][0], sm[half - 1][1] - sm[half + 1][1])),
+      ...fitCurve([...sm.slice(half), sm[0]], tol, unit(sm[half + 1][0] - sm[half - 1][0], sm[half + 1][1] - sm[half - 1][1]), [-t[0], -t[1]])]
+    return { d: head(sm[0]) + bz.map(cub).join('') + 'Z', curves: bz.length, lines: 0, corners: 0 }
+  }
+
+  const s = cumulative(guide, true)
+  const T = s[n]
+  const gap = (a: number, b: number) => (b > a ? s[b] - s[a] : T - s[a] + s[b])
+  const m = cs.length
+  const pin = cs.map((c, j) => crispCorner(guide, s, c, Math.min(gap(cs[(j - 1 + m) % m], c), gap(c, cs[(j + 1) % m])) / 2))
+  let d = head(pin[0]), curves = 0, lines = 0
+  for (let j = 0; j < m; j++) {
+    const a = cs[j], b = cs[(j + 1) % m]
+    const run: P[] = [pin[j]]
+    for (let i = (a + 1) % n; i !== b; i = (i + 1) % n) run.push(ring[i])
+    run.push(pin[(j + 1) % m])
+    const sm = smoothKeep(run, o.smoothness, false)
+    if (sm.length <= 3 || chordDeviation(sm) <= Math.min(0.5, tol * 0.5)) {
+      d += `L${f2(sm[sm.length - 1][0])} ${f2(sm[sm.length - 1][1])}`
+      lines++
+      continue
+    }
+    const len = Math.min(2.5, gap(a, b) / 4)
+    const bz = fitCurve(sm, tol, lead(sm, len), lead([...sm].reverse(), len))
+    d += bz.map(cub).join('')
+    curves += bz.length
+  }
+  return { d: d + 'Z', curves, lines, corners: m }
 }
 
 export interface OutlineResult { d: string; paths: number; curves: number; lines: number; corners: number }
 
-export function traceOutline(bm: Uint8Array, w: number, h: number, o: TraceOptions): OutlineResult {
-  const paths = decompose(bm, w, h, o)
-  let d = '', curves = 0, lines = 0, corners = 0
-  for (const p of paths) {
-    calcSums(p)
-    calcLon(p)
-    bestPolygon(p)
-    adjustVertices(p)
-    smoothCurve(p, o.alphaMax)
-    if (o.optCurve) optiCurve(p, o.optTolerance)
-    corners += p.curve.tag.filter((t) => t === 'CORNER').length
-    const r = curveToD(p.curve)
-    d += r.d
-    curves += r.curves
-    lines += r.lines
+export function traceOutline(bm: Uint8Array, w: number, h: number, o: OutlineOptions): OutlineResult {
+  let d = '', paths = 0, curves = 0, lines = 0, corners = 0
+  for (const ring of contours(bm, w, h)) {
+    if (Math.abs(signedArea(ring)) < Math.max(1, o.minArea)) continue
+    const r = emitRing(ring, o)
+    d += r.d; paths++; curves += r.curves; lines += r.lines; corners += r.corners
   }
-  return { d, paths: paths.length, curves, lines, corners }
+  return { d, paths, curves, lines, corners }
 }
 
 // ---------- centerline tracing ----------
@@ -800,7 +519,7 @@ export function strokeSvg(w: number, h: number, strokes: Stroke[], st: SvgStyle)
 
 // ---------- full pipeline (used by the worker) ----------
 
-export interface Options extends BinOptions, TraceOptions, CenterOptions { mode2: 'outline' | 'centerline'; speckle: number }
+export interface Options extends BinOptions, OutlineOptions, CenterOptions { mode2: 'outline' | 'centerline'; speckle: number }
 export interface Output { w: number; h: number; level: number; bm: Uint8Array; svg: string; paths: number; curves: number; lines: number; corners: number; avgWidth: number }
 
 export function run(px: Uint8ClampedArray, w: number, h: number, o: Options, st: SvgStyle): Output {

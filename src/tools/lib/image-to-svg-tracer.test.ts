@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { binarize, despeckle, otsu, thin, traceCenterline, traceOutline, type TraceOptions } from './image-to-svg-tracer'
+import { binarize, despeckle, otsu, thin, traceCenterline, traceOutline, type OutlineOptions } from './image-to-svg-tracer'
 
-const O: TraceOptions = { turdSize: 2, turnPolicy: 'minority', alphaMax: 1, optCurve: true, optTolerance: 0.2 }
+const O: OutlineOptions = { minArea: 2, cornerAngle: 60, smoothness: 1.5, tolerance: 0.6 }
 
 function bitmap(w: number, h: number, f: (x: number, y: number) => boolean) {
   const bm = new Uint8Array(w * h)
@@ -63,43 +63,69 @@ describe('thresholding', () => {
   })
 })
 
-describe('potrace-style outline', () => {
-  it('a square becomes one path with 4 corners and exact area', () => {
+describe('outline', () => {
+  it('a square becomes one path with 4 sharp corners, straight sides and the right area', () => {
     const bm = bitmap(40, 40, (x, y) => x > 10 && x < 30 && y > 10 && y < 30)
     const r = traceOutline(bm, 40, 40, O)
     expect(r.paths).toBe(1)
     expect(r.corners).toBe(4)
+    expect(r.curves).toBe(0)
+    expect(r.lines).toBe(4)
     expect(Math.abs(Math.abs(areas(r.d)[0]) - 400)).toBeLessThan(4)
   })
-  it('a disc becomes smooth curves with area ≈ πr²', () => {
+  it('a rotated square keeps its corners', () => {
+    const c = Math.cos(0.4), s = Math.sin(0.4)
+    const bm = bitmap(80, 80, (x, y) => { const u = (x - 40) * c + (y - 40) * s, v = -(x - 40) * s + (y - 40) * c; return Math.abs(u) < 20 && Math.abs(v) < 20 })
+    const r = traceOutline(bm, 80, 80, O)
+    expect(r.corners).toBe(4)
+    expect(Math.abs(Math.abs(areas(r.d)[0]) / 1600 - 1)).toBeLessThan(0.02)
+  })
+  it('a disc becomes a few smooth curves with area ≈ πr²', () => {
     const R = 30
     const bm = bitmap(80, 80, (x, y) => (x - 40) ** 2 + (y - 40) ** 2 < R * R)
     const r = traceOutline(bm, 80, 80, O)
     expect(r.paths).toBe(1)
     expect(r.corners).toBe(0)
-    expect(r.curves).toBeLessThanOrEqual(8)
-    const px = bm.reduce((a, v) => a + v, 0)
-    expect(Math.abs(Math.abs(areas(r.d)[0]) / px - 1)).toBeLessThan(0.02) // within opttolerance
-    const raw = traceOutline(bm, 80, 80, { ...O, optCurve: false })
-    expect(Math.abs(Math.abs(areas(raw.d)[0]) / px - 1)).toBeLessThan(0.02)
+    expect(r.lines).toBe(0)
+    expect(r.curves).toBeLessThanOrEqual(12)
+    expect(Math.abs(Math.abs(areas(r.d)[0]) / (Math.PI * R * R) - 1)).toBeLessThan(0.02)
   })
-  it('a ring yields outer boundary and hole', () => {
+  it('small discs have no spurious corners', () => {
+    const bm = bitmap(40, 40, (x, y) => (x - 20) ** 2 + (y - 20) ** 2 < 36)
+    const r = traceOutline(bm, 40, 40, O)
+    expect(r.corners).toBe(0)
+    expect(Math.abs(Math.abs(areas(r.d)[0]) / (Math.PI * 36) - 1)).toBeLessThan(0.06)
+  })
+  it('a ring yields an outer boundary and a hole of opposite winding', () => {
     const bm = bitmap(80, 80, (x, y) => { const d = Math.hypot(x - 40, y - 40); return d < 30 && d > 18 })
     const r = traceOutline(bm, 80, 80, O)
     expect(r.paths).toBe(2)
-    const a = areas(r.d).map(Math.abs).sort((p, q) => q - p)
-    expect(a[0] / (Math.PI * 900)).toBeCloseTo(1, 1)
-    expect(a[1] / (Math.PI * 324)).toBeCloseTo(1, 1)
+    const ar = areas(r.d)
+    expect(Math.sign(ar[0])).toBe(-Math.sign(ar[1]))
+    const a = ar.map(Math.abs).sort((p, q) => q - p)
+    expect(Math.abs(a[0] / (Math.PI * 900) - 1)).toBeLessThan(0.03)
+    expect(Math.abs(a[1] / (Math.PI * 324) - 1)).toBeLessThan(0.03)
   })
-  it('without curve optimisation there are more segments', () => {
-    const bm = bitmap(80, 80, (x, y) => (x - 40) ** 2 / 900 + (y - 40) ** 2 / 300 < 1)
-    const a = traceOutline(bm, 80, 80, O), b = traceOutline(bm, 80, 80, { ...O, optCurve: false })
-    expect(b.curves).toBeGreaterThan(a.curves)
+  it('a D shape has two corners joined by a straight line and a curve', () => {
+    const bm = bitmap(80, 80, (x, y) => x > 30 && (x - 30) ** 2 + (y - 40) ** 2 < 900)
+    const r = traceOutline(bm, 80, 80, O)
+    expect(r.corners).toBe(2)
+    expect(r.lines).toBe(1)
+    expect(Math.abs(Math.abs(areas(r.d)[0]) / (Math.PI * 450) - 1)).toBeLessThan(0.03)
   })
-  it('turd size drops tiny specks', () => {
+  it('a larger tolerance gives fewer segments', () => {
+    const bm = bitmap(120, 80, (x, y) => (x - 60) ** 2 / 2500 + (y - 40) ** 2 / 900 < 1 && Math.sin(x / 4) * 3 + 40 - y < 25)
+    const a = traceOutline(bm, 120, 80, { ...O, tolerance: 0.2 }), b = traceOutline(bm, 120, 80, { ...O, tolerance: 2 })
+    expect(a.curves).toBeGreaterThan(b.curves)
+  })
+  it('a corner angle of 180° turns everything into smooth curves', () => {
+    const bm = bitmap(40, 40, (x, y) => x > 10 && x < 30 && y > 10 && y < 30)
+    expect(traceOutline(bm, 40, 40, { ...O, cornerAngle: 180 }).corners).toBe(0)
+  })
+  it('min area drops tiny specks', () => {
     const bm = bitmap(40, 40, (x, y) => (x > 10 && x < 30 && y > 10 && y < 30) || (x > 35 && x < 37 && y > 2 && y < 4))
-    expect(traceOutline(bm, 40, 40, { ...O, turdSize: 5 }).paths).toBe(1)
-    expect(traceOutline(bm, 40, 40, { ...O, turdSize: 0 }).paths).toBe(2)
+    expect(traceOutline(bm, 40, 40, { ...O, minArea: 5 }).paths).toBe(1)
+    expect(traceOutline(bm, 40, 40, { ...O, minArea: 0 }).paths).toBe(2)
   })
 })
 

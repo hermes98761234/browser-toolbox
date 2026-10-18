@@ -1,28 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Btn, Check, CopyButton, download, FileDrop, Note, num, Panel, Row, Seg, Select, Slider, Split, Stat, Stats, useToolState } from '../kit'
+import { Btn, Check, CopyButton, download, FileDrop, Note, num, Panel, Row, Seg, Slider, Split, Stat, Stats, useToolState } from '../kit'
 import { fmtBytes } from './lib/image-compressor'
-import type { Options, Output, ThresholdMode, TurnPolicy } from './lib/image-to-svg-tracer'
+import type { Options, Output, ThresholdMode } from './lib/image-to-svg-tracer'
 
 type Sample = 'sketch' | 'signature' | 'logo'
 interface S {
   sample: Sample; maxSize: number
   mode2: 'outline' | 'centerline'
   mode: ThresholdMode; level: number; window: number; sensitivity: number; blur: number; invert: boolean; speckle: number
-  turnPolicy: TurnPolicy; alphaMax: number; optCurve: boolean; optTolerance: number
+  cornerAngle: number; smoothness: number; tolerance: number
   minSpur: number; error: number; smoothing: number; widthMode: 'auto' | 'fixed'; width: number
   color: string; background: boolean; view: 'svg' | 'bitmap' | 'overlay' | 'original'
 }
 const DEF: S = {
   sample: 'sketch', maxSize: 900, mode2: 'outline',
   mode: 'adaptive', level: 128, window: 12, sensitivity: 18, blur: 1, invert: false, speckle: 12,
-  turnPolicy: 'minority', alphaMax: 1, optCurve: true, optTolerance: 0.2,
+  cornerAngle: 60, smoothness: 1.5, tolerance: 0.8,
   minSpur: 8, error: 1.2, smoothing: 2, widthMode: 'auto', width: 2.5,
   color: '#1f2937', background: false, view: 'svg',
 }
 const PRESETS: Record<Sample, Partial<S>> = {
-  sketch: { mode2: 'outline', mode: 'adaptive', blur: 1, speckle: 12, alphaMax: 1 },
+  sketch: { mode2: 'outline', mode: 'adaptive', blur: 1, speckle: 12, cornerAngle: 70, smoothness: 1.5 },
   signature: { mode2: 'centerline', mode: 'otsu', blur: 1, speckle: 10, smoothing: 2, error: 1.2, color: '#1e3a8a' },
-  logo: { mode2: 'outline', mode: 'otsu', blur: 0, speckle: 4, alphaMax: 1, color: '#111827' },
+  logo: { mode2: 'outline', mode: 'otsu', blur: 0, speckle: 4, cornerAngle: 55, smoothness: 1.5, color: '#111827' },
 }
 
 function rng(seed: number) {
@@ -135,7 +135,7 @@ export default function ImageToSvgTracer() {
 
   const opts: Options = {
     mode2: s.mode2, mode: s.mode, level: s.level, window: s.window, sensitivity: s.sensitivity, blur: s.blur, invert: s.invert, speckle: s.speckle,
-    turdSize: s.speckle, turnPolicy: s.turnPolicy, alphaMax: s.alphaMax, optCurve: s.optCurve, optTolerance: s.optTolerance,
+    minArea: s.speckle, cornerAngle: s.cornerAngle, smoothness: s.smoothness, tolerance: s.tolerance,
     minSpur: s.minSpur, error: s.error, smoothing: s.smoothing, widthMode: s.widthMode, width: s.width,
   }
   const key = JSON.stringify([opts, s.color, s.background])
@@ -213,12 +213,11 @@ export default function ImageToSvgTracer() {
           <Seg value={s.mode2} onChange={(mode2) => set({ mode2 })} options={[['outline', '◼ Outline (filled shapes)'], ['centerline', '〰 Centerline (strokes)']]} />
           {s.mode2 === 'outline' ? (
             <>
-              <Slider label="Corner threshold α" value={s.alphaMax} onChange={(alphaMax) => set({ alphaMax })} min={0} max={1.34} step={0.01} show={(v) => (v === 0 ? '0 (polygon)' : v >= 1.334 ? 'no corners' : num(v, 2))} />
+              <Slider label="Corner angle" value={s.cornerAngle} onChange={(cornerAngle) => set({ cornerAngle })} min={20} max={180} step={5} show={(v) => (v >= 180 ? 'no corners' : `${v}°`)} />
               <Row>
-                <Check label="Optimise curves" value={s.optCurve} onChange={(optCurve) => set({ optCurve })} />
-                <Select label="Turn policy" value={s.turnPolicy} onChange={(turnPolicy) => set({ turnPolicy })} options={['minority', 'majority', 'black', 'white', 'left', 'right'] as const} />
+                <Slider label="Smoothing" value={s.smoothness} onChange={(smoothness) => set({ smoothness })} min={0} max={5} step={0.25} unit=" px" />
+                <Slider label="Fit tolerance" value={s.tolerance} onChange={(tolerance) => set({ tolerance })} min={0.1} max={3} step={0.1} unit=" px" />
               </Row>
-              {s.optCurve && <Slider label="Curve tolerance" value={s.optTolerance} onChange={(optTolerance) => set({ optTolerance })} min={0.05} max={1.5} step={0.05} unit=" px" />}
             </>
           ) : (
             <>
@@ -272,12 +271,12 @@ export default function ImageToSvgTracer() {
           </div>
           <p className="muted" style={{ fontSize: 13 }}>
             {s.mode2 === 'outline'
-              ? 'Outline mode (potrace-style): boundary decomposition → optimal polygon → vertex adjustment → corner detection (α) → Bézier smoothing → curve optimisation. Best for logos, filled lettering and inked drawings.'
+              ? 'Outline mode: marching-squares boundaries (holes included, even-odd fill) → corners where the outline turns more than the corner angle → shrink-free smoothing between corners → least-squares Bézier fitting (straight runs become lines). Best for logos, filled lettering and inked drawings.'
               : 'Centerline mode: Zhang–Suen skeleton → stroke graph split at junctions and end points → spur pruning → least-squares Béziers, stroke width estimated per stroke from the distance transform. Best for pen drawings, handwriting and signatures (plotters, laser cutters, animation).'}
           </p>
         </Panel>
         <Note>
-          Tips: use <b>Adaptive</b> for phone photos with shadows; raise <b>Despeckle</b> for paper grain; lower the corner threshold for technical drawings, raise it for organic shapes. For multi-colour artwork use the Vectorizer tool instead.
+          Tips: use <b>Adaptive</b> for phone photos with shadows; raise <b>Despeckle</b> for paper grain; lower the corner angle for technical drawings, raise it for organic shapes. For multi-colour artwork use the Vectorizer tool instead.
         </Note>
       </div>
     </Split>

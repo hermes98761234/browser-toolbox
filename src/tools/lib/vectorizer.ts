@@ -356,16 +356,19 @@ function fitCubic(p: P[], t1: P, t2: P, err: number, out: Bez[], depth = 0) {
   fitCubic(p.slice(split), mulS(tc, -1), t2, err, out, depth + 1)
 }
 
-/** Fit an open polyline with cubic Béziers (end tangents estimated from neighbours). */
-export function fitCurve(p: P[], err: number): Bez[] {
+/**
+ * Fit an open polyline with cubic Béziers. End tangents are estimated from neighbours unless given:
+ * `tStart` points forward from the first point, `tEnd` points backward from the last point.
+ */
+export function fitCurve(p: P[], err: number, tStart?: P, tEnd?: P): Bez[] {
   const q = p.filter((pt, i) => i === 0 || dist(pt, p[i - 1]) > 1e-9)
   if (q.length < 2) return []
   // one-sided second-order tangent estimate (−3p0 + 4pk − p2k), falling back to a chord
   const tan = (a: P, b: P, c: P | undefined): P => nrm(c ? sub(sub(mulS(b, 4), mulS(a, 3)), c) : sub(b, a))
   const k = Math.max(1, Math.min(2, Math.floor((q.length - 1) / 2)))
   const n = q.length - 1
-  const t1 = tan(q[0], q[k], 2 * k <= n ? q[2 * k] : undefined)
-  const t2 = tan(q[n], q[n - k], n - 2 * k >= 0 ? q[n - 2 * k] : undefined)
+  const t1 = tStart ? nrm(tStart) : tan(q[0], q[k], 2 * k <= n ? q[2 * k] : undefined)
+  const t2 = tEnd ? nrm(tEnd) : tan(q[n], q[n - k], n - 2 * k >= 0 ? q[n - 2 * k] : undefined)
   const out: Bez[] = []
   fitCubic(q, t1, t2, err, out)
   return out
